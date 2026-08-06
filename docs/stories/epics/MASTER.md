@@ -4,9 +4,9 @@ version: 1.0
 status: ativo
 date: 2026-04-28
 owner: Rafael Melgaço
-total_epics: 13
-estimated_total_stories: 128
-estimated_total_points: 380
+total_epics: 14
+estimated_total_stories: 146
+estimated_total_points: 471
 estimated_calendar: 8-12 semanas
 ---
 
@@ -43,8 +43,14 @@ estimated_calendar: 8-12 semanas
 | 11 | EPIC-11 | Super-Admin Platform | 14 | 48 | P0 | pending (Phase 3 gated) | `EPIC-11-admin-platform.md` |
 | 12 | EPIC-12 | Hardening + E2E + Polish | 10 | 31 | P0 | ✅ completed (partial: Lighthouse CI + bundle-analyzer + /app/* E2E deferred) | `EPIC-12-hardening.md` |
 | 13 | EPIC-13 | AI Agents Module (MCP + multi-provider) | 12 | 44 | P0 | pending | `EPIC-13-ai-agents-module.md` |
+| 14 | EPIC-14 | Growth Agents Module (prospecção) | 13 | 41 | P1 | pending | `EPIC-14-growth-agents.md` |
 
-**Totais**: 13 epics · 133 stories · ~430 points
+**Totais**: 14 epics · 146 stories · ~471 points
+
+> **EPIC-14 é pós-MVP-B.** Os 13 primeiros epics compõem o MVP-B; o 14 é o primeiro
+> módulo construído *sobre* a plataforma pronta, e não sobre a fundação sendo erguida.
+> Ele alimenta o funil do EPIC-04 em vez de criar um funil próprio. PRD em `pdr.md` v1.1,
+> com quatro decisões locked que o epic implementa e não revisita.
 
 ## 3. Grafo de dependências
 
@@ -63,6 +69,8 @@ graph TD
   E10[EPIC-10 Audit + Settings]
   E11[EPIC-11 Admin Platform]
   E12[EPIC-12 Hardening]
+  E13[EPIC-13 AI Agents Module]
+  E14[EPIC-14 Growth Agents]
 
   E00 --> E01
   E01 --> E02
@@ -89,6 +97,15 @@ graph TD
   E09 --> E12
   E10 --> E12
   E11 --> E12
+
+  E03 --> E13
+  E04 --> E13
+  E05 --> E13
+  E06 --> E13
+
+  E04 --> E14
+  E06 --> E14
+  E13 --> E14
 ```
 
 ## 4. Ordem recomendada de execução
@@ -119,8 +136,17 @@ graph TD
 ### Fase G — Admin Platform (depende de E03, E04, E05, E10)
 12. **EPIC-11** Super-Admin Platform
 
-### Fase H — Hardening (final)
+### Fase H — Hardening (final do MVP-B)
 13. **EPIC-12** Hardening + E2E + Polish
+
+### Fase I — Módulos sobre a plataforma (pós-MVP-B)
+14. **EPIC-13** AI Agents Module (depende de E03, E04, E05, E06)
+15. **EPIC-14** Growth Agents / prospecção (depende de E04, E06, E13)
+
+> A Fase I não é continuação da construção da plataforma — é o que se constrói **em cima**
+> dela. EPIC-14 em particular consome contratos prontos (`crm_leads`, `event_log`,
+> `ai_budgets`) e o padrão de dispatcher do EPIC-13, sem estender nenhuma tabela deles.
+> Cada uma das 3 fases internas do EPIC-14 deixa o sistema coerente se a execução parar ali.
 
 ## 5. Como rodar (instruções pro humano)
 

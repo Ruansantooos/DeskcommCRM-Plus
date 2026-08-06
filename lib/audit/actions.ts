@@ -192,4 +192,12 @@ export type AuditAction =
   // vira `pipeline.archived` e a linha continua no banco.
   | "pipeline.deleted"
   | "system.update_requested"
-  | "system.update_finished";
+  | "system.update_finished"
+  // Growth Agents (EPIC-14). Prospecção gasta quota de API paga e escreve no
+  // funil do cliente — quem ligou, pausou ou disparou precisa ficar registrado.
+  | "growth_agent.created"
+  | "growth_agent.updated"
+  | "growth_agent.deleted"
+  | "growth_agent.paused"
+  | "growth_agent.resumed"
+  | "growth_agent.run_requested";

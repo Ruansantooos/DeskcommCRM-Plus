@@ -3,11 +3,13 @@
  * pede o adapter do provider da conversa e o descritor de capabilities.
  */
 import { metaCloudAdapter } from "./adapters/meta-cloud";
+import { evolutionAdapter } from "./adapters/evolution";
 import { wahaAdapter } from "./adapters/waha";
 import type { ChannelAdapter, ChannelProvider } from "./types";
 
 const ADAPTERS: Record<ChannelProvider, ChannelAdapter | null> = {
   waha: wahaAdapter,
+  evolution: evolutionAdapter,
   meta_cloud: metaCloudAdapter,
 };
 

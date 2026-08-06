@@ -8773,3 +8773,676 @@ create index if not exists idx_contacts_avatar_refresh
   where wa_identity is not null and is_anonymized = false;
 
 notify pgrst, 'reload schema';
+
+
+-- ---- growth agents module (migration 0100) ----
+-- EPIC-14. Prospecção automatizada que alimenta o funil do EPIC-04.
+-- Conteúdo idêntico ao da migration 0100 — os dois artefatos andam juntos.
+-- Todo o bloco é idempotente e auto-curativo: o update.sh do clone re-aplica
+-- sem quebrar e sem duplicar efeito.
+
+-- =============================================================================
+-- 0100 — Growth Agents Module (EPIC-14, S-14.01)
+--
+-- Prospecção automatizada: agentes que descobrem empresas por nicho + cidade,
+-- enriquecem, diagnosticam, pontuam e decidem o que vira lead no funil que JÁ
+-- existe. Não cria um CRM paralelo — alimenta `crm_leads` do EPIC-04.
+--
+-- Espelha o padrão do EPIC-13 (agente = row configurável, runs com trace,
+-- dispatcher drenando event_log) sem estender as tabelas dele: `ai_agents` é
+-- agente que conversa com cliente; `growth_agents` é agente que sai procurando
+-- empresa. Ciclos de vida e contratos diferentes.
+--
+-- Decisões locked do PRD (pdr.md §12) refletidas aqui:
+--   D-01: analyzer é fetch+parse, sem browser -> performance_score e
+--         is_mobile_friendly nascem NULL e assim ficam no MVP.
+--   D-03: agentes NÃO versionam -> growth_agent_runs.params_snapshot é o que
+--         garante auditoria ("com que config este run rodou").
+--   D-04: threshold do SDR vive em growth_agents.params, não em tabela nova.
+--
+-- Idempotente: pode ser re-aplicada sem quebrar nem duplicar efeito.
+-- =============================================================================
+
+-- ---- 1. Empresas descobertas ------------------------------------------------
+
+create table if not exists public.growth_companies (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  place_id text not null,
+  name text not null,
+  address text,
+  phone text,
+  category text,
+  city text,
+  lat numeric,
+  lng numeric,
+  source text not null default 'maps_agent',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint growth_companies_source_check
+    check (source in ('maps_agent', 'manual', 'import'))
+);
+
+-- Dedup é POR TENANT, não global: dois clientes podem prospectar a mesma
+-- empresa sem que um enxergue o outro.
+create unique index if not exists growth_companies_org_place_uniq
+  on public.growth_companies (organization_id, place_id);
+
+create index if not exists growth_companies_org_city_idx
+  on public.growth_companies (organization_id, city);
+
+-- ---- 2. Enriquecimento (1:1) ------------------------------------------------
+
+create table if not exists public.growth_enrichment (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  company_id uuid not null references public.growth_companies(id) on delete cascade,
+  website_url text,
+  instagram_url text,
+  facebook_url text,
+  linkedin_url text,
+  whatsapp text,
+  email text,
+  provider text not null default 'heuristic',
+  status text not null default 'pending',
+  enriched_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint growth_enrichment_status_check
+    check (status in ('pending', 'completed', 'failed'))
+);
+
+create unique index if not exists growth_enrichment_company_uniq
+  on public.growth_enrichment (company_id);
+
+-- ---- 3. Análise de site (1:1) -----------------------------------------------
+
+create table if not exists public.growth_website_analysis (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  company_id uuid not null references public.growth_companies(id) on delete cascade,
+  has_https boolean,
+  cms text,
+  has_ga4 boolean,
+  has_pixel boolean,
+  seo_score integer,
+  -- ATENÇÃO (PRD D-01): o analisador do MVP faz fetch + parse de HTML, NÃO
+  -- renderiza. Logo não mede performance real nem responsividade. Estas duas
+  -- colunas ficam NULL de propósito e NÃO devem ser preenchidas por heurística
+  -- inventada: o agente Score consome isto, e número falso vira lead falso.
+  -- Elas existem desde já para receber um probe de medição real (PageSpeed,
+  -- Lighthouse) sem migration nova.
+  performance_score integer,
+  is_mobile_friendly boolean,
+  has_blog boolean,
+  has_contact_form boolean,
+  analysis_status text not null default 'pending',
+  failure_reason text,
+  analyzed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint growth_website_analysis_status_check
+    check (analysis_status in ('pending', 'completed', 'failed', 'disallowed')),
+  constraint growth_website_analysis_seo_range
+    check (seo_score is null or seo_score between 0 and 100),
+  constraint growth_website_analysis_perf_range
+    check (performance_score is null or performance_score between 0 and 100)
+);
+
+create unique index if not exists growth_website_analysis_company_uniq
+  on public.growth_website_analysis (company_id);
+
+-- ---- 4. Anúncios (1:N — o histórico É o sinal) ------------------------------
+
+create table if not exists public.growth_ads_analysis (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  company_id uuid not null references public.growth_companies(id) on delete cascade,
+  platform text not null default 'meta',
+  is_advertising boolean,
+  active_creatives_count integer,
+  active_since date,
+  landing_page_url text,
+  status text not null default 'completed',
+  checked_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint growth_ads_analysis_platform_check
+    check (platform in ('meta', 'google', 'tiktok', 'linkedin')),
+  constraint growth_ads_analysis_status_check
+    check (status in ('completed', 'unavailable', 'failed'))
+);
+
+create index if not exists growth_ads_analysis_company_idx
+  on public.growth_ads_analysis (company_id, checked_at desc);
+
+-- ---- 5. Scores (1:N — histórico) --------------------------------------------
+
+create table if not exists public.growth_scores (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  company_id uuid not null references public.growth_companies(id) on delete cascade,
+  score integer not null,
+  problems jsonb not null default '[]'::jsonb,
+  opportunities jsonb not null default '[]'::jsonb,
+  suggested_message text,
+  next_action text,
+  model_used text,
+  scored_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint growth_scores_range check (score between 0 and 100)
+);
+
+create index if not exists growth_scores_company_idx
+  on public.growth_scores (company_id, scored_at desc);
+
+-- ---- 6. Agentes -------------------------------------------------------------
+
+create table if not exists public.growth_agents (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  kind text not null,
+  name text not null,
+  params jsonb not null default '{}'::jsonb,
+  schedule_cron text,
+  is_active boolean not null default true,
+  priority integer not null default 0,
+  created_by_user_id uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint growth_agents_kind_check
+    check (kind in ('maps', 'enrichment', 'website_analyzer', 'meta_ads', 'score', 'sdr'))
+);
+
+create unique index if not exists growth_agents_org_kind_name_uniq
+  on public.growth_agents (organization_id, kind, name);
+
+-- ---- 7. Execuções -----------------------------------------------------------
+
+create table if not exists public.growth_agent_runs (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  agent_id uuid not null references public.growth_agents(id) on delete cascade,
+  status text not null default 'queued',
+  items_total integer not null default 0,
+  items_processed integer not null default 0,
+  stop_reason text,
+  error text,
+  trace jsonb not null default '{}'::jsonb,
+  -- Substitui deliberadamente o versionamento de agente (PRD D-03): carimba a
+  -- config vigente quando o run começou. É o que responde "com que parâmetros
+  -- este run rodou" sem a máquina de save/publish do EPIC-13.
+  params_snapshot jsonb not null default '{}'::jsonb,
+  started_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint growth_agent_runs_status_check
+    check (status in ('queued', 'running', 'completed', 'failed'))
+);
+
+-- Guarda de concorrência: cron e clique manual disparando ao mesmo tempo não
+-- podem gerar dois runs do mesmo agente. Mesma técnica do
+-- ai_agent_runs_one_running_per_conv (EPIC-13), que já provou segurar.
+create unique index if not exists growth_agent_runs_one_active_per_agent
+  on public.growth_agent_runs (agent_id)
+  where status in ('queued', 'running');
+
+create index if not exists growth_agent_runs_agent_idx
+  on public.growth_agent_runs (agent_id, started_at desc);
+
+-- ---- 8. Decisões do SDR -----------------------------------------------------
+
+create table if not exists public.growth_sdr_decisions (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  company_id uuid not null references public.growth_companies(id) on delete cascade,
+  verdict text not null,
+  score_at_decision integer,
+  -- RF-D04: guardar só "quente/frio" faz do módulo uma caixa-preta que o
+  -- operador desliga na segunda semana. O porquê é o que o torna corrigível.
+  reasoning text not null,
+  lead_id uuid references public.crm_leads(id) on delete set null,
+  review_after date,
+  decided_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint growth_sdr_decisions_verdict_check
+    check (verdict in ('hot', 'cold', 'manual_review'))
+);
+
+-- Uma decisão por empresa: evento reprocessado vira no-op, não segundo lead.
+create unique index if not exists growth_sdr_decisions_org_company_uniq
+  on public.growth_sdr_decisions (organization_id, company_id);
+
+-- ---- 9. Vínculo com o funil existente ---------------------------------------
+
+-- DIRC manda "Referenciar": ponteiro para tabela tenant-aware é FK de verdade,
+-- nunca uma chave dentro do source_metadata jsonb (anti-pattern 6 — sem
+-- integridade referencial, sem cascade, UI lendo path solto).
+alter table public.crm_leads
+  add column if not exists source_company_id uuid references public.growth_companies(id) on delete set null;
+
+create index if not exists crm_leads_source_company_idx
+  on public.crm_leads (source_company_id)
+  where source_company_id is not null;
+
+-- ---- 10. updated_at ---------------------------------------------------------
+
+-- Só as tabelas que TÊM a coluna. `growth_agent_runs` fica de fora de
+-- propósito: seu ciclo de vida é explícito (started_at / finished_at) e ela não
+-- tem `updated_at` — com o trigger, todo UPDATE de run falharia em
+-- "record new has no field updated_at", quebrando o dispatcher inteiro.
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'growth_companies', 'growth_enrichment', 'growth_website_analysis',
+    'growth_agents'
+  ] loop
+    if not exists (
+      select 1 from pg_trigger
+      where tgname = 'trg_' || t || '_updated_at'
+    ) then
+      execute format(
+        'create trigger trg_%1$s_updated_at before update on public.%1$s
+           for each row execute function public.fn_set_updated_at()', t
+      );
+    end if;
+  end loop;
+end
+$$;
+
+-- ---- 11. RLS ----------------------------------------------------------------
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'growth_companies', 'growth_enrichment', 'growth_website_analysis',
+    'growth_ads_analysis', 'growth_scores', 'growth_agents',
+    'growth_agent_runs', 'growth_sdr_decisions'
+  ] loop
+    execute format('alter table public.%I enable row level security', t);
+
+    -- Forma idêntica à das tabelas já existentes (ver tenant_isolation_contacts_all
+    -- no baseline): o OR fn_is_platform_admin() não é opcional — sem ele o
+    -- super-admin de plataforma fica cego para o módulo, e o /admin quebra.
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = t
+        and policyname = 'tenant_isolation_' || t || '_all'
+    ) then
+      execute format(
+        'create policy tenant_isolation_%1$s_all on public.%1$s
+           using (
+             organization_id in (select public.fn_user_org_ids())
+             or public.fn_is_platform_admin()
+           )
+           with check (
+             organization_id in (select public.fn_user_org_ids())
+             or public.fn_is_platform_admin()
+           )', t
+      );
+    end if;
+  end loop;
+end
+$$;
+
+-- ---- 12. Audit --------------------------------------------------------------
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'growth_companies', 'growth_enrichment', 'growth_website_analysis',
+    'growth_agents', 'growth_sdr_decisions'
+  ] loop
+    if not exists (select 1 from pg_trigger where tgname = 'trg_' || t || '_audit') then
+      execute format(
+        'create trigger trg_%1$s_audit after insert or update or delete on public.%1$s
+           for each row execute function public.fn_audit_log_row()', t
+      );
+    end if;
+  end loop;
+end
+$$;
+
+notify pgrst, 'reload schema';
+
+
+-- ---- growth approval queue (migration 0101) ----
+-- Gate humano antes de qualquer envio de prospecção. Idempotente.
+
+-- =============================================================================
+-- 0101 — Fila de aprovação humana da prospecção (EPIC-14)
+--
+-- Decisão de produto de 2026-08-05: NENHUMA mensagem de prospecção sai sem um
+-- humano ler e aprovar. Mensagem fria no WhatsApp para empresa que nunca
+-- procurou a gente é o vetor de banimento que toda a doutrina anti-ban do
+-- CLAUDE.md existe para evitar — e o throttle protege o ritmo, não protege de
+-- denúncia por spam. Quem denuncia é o destinatário.
+--
+-- Forward-fix sobre a 0100 (que já foi para o baseline): a 0100 modelava o SDR
+-- decidindo e promovendo direto ao funil. Estas colunas inserem o gate humano
+-- entre a decisão e o envio.
+--
+-- O envio em si NÃO é modelado aqui: reusa `lib/automation/send-whatsapp.ts`,
+-- que já tem janela de horário, limite diário por sessão, espaçamento e jitter.
+-- =============================================================================
+
+alter table public.growth_sdr_decisions
+  -- 'not_applicable' é o estado dos verdicts 'cold'/'manual_review': eles não
+  -- geram mensagem, então não podem ficar eternamente 'pending' poluindo a fila.
+  add column if not exists approval_status text not null default 'pending',
+  -- O que a IA sugeriu. Preservado mesmo depois de editado, para dar para
+  -- comparar sugestão e versão final — é assim que se calibra o prompt.
+  add column if not exists message_draft text,
+  -- O que o humano de fato aprovou. NULL enquanto não aprovado.
+  add column if not exists message_final text,
+  add column if not exists approved_by_user_id uuid references auth.users(id) on delete set null,
+  add column if not exists approved_at timestamptz,
+  add column if not exists sent_at timestamptz,
+  add column if not exists send_error text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'growth_sdr_decisions_approval_status_check'
+  ) then
+    alter table public.growth_sdr_decisions
+      add constraint growth_sdr_decisions_approval_status_check
+      check (approval_status in ('pending', 'approved', 'rejected', 'sent', 'failed', 'not_applicable'));
+  end if;
+end
+$$;
+
+-- A fila é sempre lida pelo mesmo recorte: o que está esperando gente olhar.
+-- Índice parcial porque 'sent' e 'rejected' acumulam para sempre e nunca são
+-- consultados por esta tela.
+create index if not exists growth_sdr_decisions_fila_idx
+  on public.growth_sdr_decisions (organization_id, decided_at desc)
+  where approval_status = 'pending';
+
+comment on column public.growth_sdr_decisions.approval_status is
+  'Gate humano obrigatório antes do envio. pending -> approved -> sent, ou rejected. '
+  'cold/manual_review nascem not_applicable (não geram mensagem).';
+
+notify pgrst, 'reload schema';
+
+
+-- ---- growth kipflow (migration 0102) ----
+-- Segunda fonte de descoberta. Idempotente e auto-curativo.
+
+-- =============================================================================
+-- 0102 — Kipflow como fonte de descoberta (EPIC-14)
+--
+-- A 0100 assumiu Google Places como fonte única e cravou `place_id not null`.
+-- A Kipflow identifica empresa por CNPJ e não devolve place_id — sem esta
+-- migration, ou se inventa um place_id sintético (que arruína o dedup quando a
+-- mesma empresa chega pelas duas fontes) ou o INSERT falha.
+--
+-- As duas fontes NÃO são intercambiáveis, e é por isso que ambas as chaves
+-- naturais convivem: Places acha negócio com fachada e ponto físico; Kipflow
+-- acha empresa com CNPJ ativo e dado cadastral rico. Recortes diferentes do
+-- mercado, não a mesma lista com qualidade diferente.
+-- =============================================================================
+
+-- ---- 1. Empresa pode vir de qualquer uma das duas fontes -------------------
+
+alter table public.growth_companies
+  alter column place_id drop not null;
+
+alter table public.growth_companies
+  add column if not exists cnpj text,
+  add column if not exists razao_social text,
+  add column if not exists cnae text,
+  add column if not exists faturamento_presumido_cents bigint,
+  add column if not exists linkedin_url text,
+  -- Custo REAL informado pela Kipflow no campo `cost` de cada resposta.
+  -- Guardar por empresa responde "quanto custou este lead" sem estimativa —
+  -- e estimativa é o que todo mundo faz porque a API normalmente não conta.
+  add column if not exists descoberta_custo_cents integer;
+
+-- Sem pelo menos uma chave natural o dedup não tem em que se apoiar, e a base
+-- enche de duplicata silenciosa — que é pior que erro, porque ninguém vê.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'growth_companies_tem_chave') then
+    alter table public.growth_companies
+      add constraint growth_companies_tem_chave
+      check (place_id is not null or cnpj is not null);
+  end if;
+end
+$$;
+
+-- Com place_id agora nullable, o unique precisa ser parcial. (Em Postgres
+-- vários NULL não colidem, então o unique comum "funcionaria" — o índice
+-- parcial existe para declarar a intenção, não para corrigir bug.)
+drop index if exists growth_companies_org_place_uniq;
+create unique index if not exists growth_companies_org_place_uniq
+  on public.growth_companies (organization_id, place_id)
+  where place_id is not null;
+
+create unique index if not exists growth_companies_org_cnpj_uniq
+  on public.growth_companies (organization_id, cnpj)
+  where cnpj is not null;
+
+alter table public.growth_companies
+  drop constraint if exists growth_companies_source_check;
+alter table public.growth_companies
+  add constraint growth_companies_source_check
+  check (source in ('maps_agent', 'kipflow_agent', 'manual', 'import'));
+
+-- ---- 2. Decisores ----------------------------------------------------------
+-- Dado NOVO que o Places nunca deu: pessoa física com cargo dentro da empresa.
+-- Tabela própria porque é 1:N e — mais importante — porque pessoa física tem
+-- regime de LGPD diferente de dado cadastral de PJ. Separar é o que torna a
+-- anonimização em cascata alcançável sem varrer colunas soltas.
+
+create table if not exists public.growth_decision_makers (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  company_id uuid not null references public.growth_companies(id) on delete cascade,
+  nome text not null,
+  cargo text,
+  linkedin_public_id text,
+  linkedin_url text,
+  email text,
+  -- 'verificado' e 'padrão de domínio' são coisas diferentes: o segundo é um
+  -- palpite (nome.sobrenome@dominio) com taxa de bounce alta. A UI precisa
+  -- conseguir avisar ANTES de alguém disparar em cima disso.
+  email_origem text,
+  telefone text,
+  descoberto_em timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint growth_decision_makers_email_origem_check
+    check (email_origem is null or email_origem in ('verificado', 'padrao_dominio', 'desconhecido'))
+);
+
+create unique index if not exists growth_decision_makers_linkedin_uniq
+  on public.growth_decision_makers (organization_id, company_id, linkedin_public_id)
+  where linkedin_public_id is not null;
+
+create index if not exists growth_decision_makers_company_idx
+  on public.growth_decision_makers (company_id);
+
+-- ---- 3. RLS + audit no padrão do módulo ------------------------------------
+
+alter table public.growth_decision_makers enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename = 'growth_decision_makers'
+      and policyname = 'tenant_isolation_growth_decision_makers_all'
+  ) then
+    create policy tenant_isolation_growth_decision_makers_all
+      on public.growth_decision_makers
+      using (
+        organization_id in (select public.fn_user_org_ids())
+        or public.fn_is_platform_admin()
+      )
+      with check (
+        organization_id in (select public.fn_user_org_ids())
+        or public.fn_is_platform_admin()
+      );
+  end if;
+end
+$$;
+
+-- Audit: é dado pessoal de terceiro. Quem inseriu, alterou e apagou precisa
+-- ficar registrado — é o que sustenta responder a um pedido de exclusão.
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'trg_growth_decision_makers_audit') then
+    create trigger trg_growth_decision_makers_audit
+      after insert or update or delete on public.growth_decision_makers
+      for each row execute function public.fn_audit_log_row();
+  end if;
+end
+$$;
+
+-- ---- 4. Consumo por execução ----------------------------------------------
+-- O plano é mensal por NÚMERO DE REQUISIÇÕES, não por reais. Então o que
+-- precisa ser contado — e mostrado ao operador — é requisição. O custo em
+-- centavos anda junto porque vem de graça na resposta.
+alter table public.growth_agent_runs
+  add column if not exists requisicoes_api integer not null default 0,
+  add column if not exists custo_api_cents integer not null default 0;
+
+comment on column public.growth_agent_runs.requisicoes_api is
+  'Chamadas a APIs pagas nesta execução. É o teto que importa em plano por quota mensal.';
+
+notify pgrst, 'reload schema';
+
+
+-- ---- growth redes sociais (migration 0103) ----
+-- Todas as redes como canal de contato + candidatas para triagem humana.
+
+-- =============================================================================
+-- 0103 — Todas as redes sociais como canal de contato (EPIC-14)
+--
+-- Dois defeitos que esta migration endereça:
+--
+-- 1. `growth_enrichment` só tinha instagram/facebook/linkedin. A Kipflow também
+--    devolve twitter, e para comércio local a rede social costuma ser o ÚNICO
+--    canal — mais do que o site, que 66% não têm.
+--
+-- 2. Guardar só o "melhor" candidato descarta informação. Medido num retorno
+--    real: a SOCILA LTDA veio com 22 URLs de Instagram, das quais 21 eram de
+--    terceiros e 1 era a correta. O casamento automático por nome acerta a
+--    maioria, mas quando não acha nada devolve NULL — e aí a lista inteira se
+--    perdia, inclusive quando um humano reconheceria o perfil de imediato.
+--
+-- Agora: as colunas guardam o canal escolhido (o que a automação usa), e
+-- `redes_candidatas` guarda tudo o que a fonte devolveu (o que o humano revisa
+-- na triagem). Nada do que foi pago é descartado.
+-- =============================================================================
+
+alter table public.growth_enrichment
+  add column if not exists twitter_url text,
+  -- Formato: { "instagram": ["url", ...], "facebook": [...], "twitter": [...] }
+  -- Só as que a fonte devolveu; ausência de chave = a fonte não trouxe aquela rede.
+  add column if not exists redes_candidatas jsonb not null default '{}'::jsonb;
+
+comment on column public.growth_enrichment.redes_candidatas is
+  'Todas as URLs de rede social que a fonte devolveu, inclusive as descartadas '
+  'pelo casamento por nome. Existe porque a base traz perfis de terceiros '
+  'misturados (caso real: 22 instagrams, 1 correto) e o humano da triagem '
+  'reconhece o certo quando a heurística não acha.';
+
+-- Índice parcial para a tela de triagem responder "quem tem algum canal?" sem
+-- varrer a tabela inteira. Empresa sem canal nenhum é o caso mais comum e não
+-- interessa a essa consulta.
+create index if not exists growth_enrichment_com_canal_idx
+  on public.growth_enrichment (organization_id)
+  where instagram_url is not null
+     or facebook_url is not null
+     or whatsapp is not null
+     or email is not null;
+
+notify pgrst, 'reload schema';
+
+
+-- ---- canal evolution (migration 0104) ----
+-- Terceiro provedor de canal. Idempotente.
+
+-- =============================================================================
+-- 0104 — Evolution API como terceiro provedor de canal
+--
+-- O produto já tinha a camada de adaptadores (`lib/channels/adapters/`) desenhada
+-- para não amarrar a um provedor, mas o BANCO só aceitava `waha` e `meta_cloud`.
+-- Sem esta migration, o adapter existiria e nenhuma sessão poderia ser criada:
+-- o CHECK barraria antes.
+--
+-- Evolution é WhatsApp NÃO-OFICIAL, como o WAHA — mesma exposição a banimento.
+-- Isso importa porque `capabilitiesOf()` arma throttle, warm-up e cap a partir
+-- do provider: tratá-lo como canal oficial desarmaria a proteção anti-ban num
+-- número que pode, sim, ser banido.
+-- =============================================================================
+
+alter table public.channel_sessions
+  -- Nome da instância no Evolution (equivalente ao `waha_session_name`).
+  add column if not exists evolution_instance text;
+
+-- Um provedor a mais no vocabulário fechado.
+alter table public.channel_sessions
+  drop constraint if exists channel_sessions_provider_check;
+alter table public.channel_sessions
+  add constraint channel_sessions_provider_check
+  check (provider in ('waha', 'meta_cloud', 'evolution'));
+
+-- Cada provedor exige SUA referência preenchida. Sem isto daria para gravar
+-- sessão Evolution sem instância — e o erro só apareceria no primeiro envio,
+-- longe da causa.
+alter table public.channel_sessions
+  drop constraint if exists channel_sessions_provider_ref_check;
+alter table public.channel_sessions
+  add constraint channel_sessions_provider_ref_check
+  check (
+    (provider = 'waha' and waha_session_name is not null)
+    or (provider = 'meta_cloud' and meta_phone_number_id is not null)
+    or (provider = 'evolution' and evolution_instance is not null)
+  );
+
+comment on column public.channel_sessions.evolution_instance is
+  'Nome da instância no Evolution API. Só preenchido quando provider = evolution.';
+
+notify pgrst, 'reload schema';
+
+
+-- ---- engine GOWS (migration 0105) ----
+-- WAHA 2026.7.2 traz o engine GOWS. Idempotente.
+
+-- =============================================================================
+-- 0105 — Engine GOWS do WAHA
+--
+-- O CHECK aceitava só NOWEB e WEBJS, os dois engines que existiam quando a
+-- tabela nasceu. O WAHA 2026.7.2 traz o GOWS (implementação em Go, mais leve
+-- que o WEBJS por não subir Chromium) e instalações reais já rodam com ele —
+-- medido numa instância em produção: `{"engine":"GOWS","tier":"CORE"}`.
+--
+-- Sem esta migration, quem roda GOWS não consegue sequer CRIAR a sessão: o
+-- INSERT em channel_sessions é barrado antes de qualquer envio, e a mensagem
+-- de erro (23514) não explica que o engine é o problema.
+--
+-- O valor não é decorativo: `lib/waha/message-id.ts` decide como interpretar o
+-- id da mensagem a partir dele.
+-- =============================================================================
+
+alter table public.channel_sessions
+  drop constraint if exists channel_sessions_engine_check;
+
+alter table public.channel_sessions
+  add constraint channel_sessions_engine_check
+  check (engine in ('NOWEB', 'WEBJS', 'GOWS'));
+
+comment on column public.channel_sessions.engine is
+  'Engine do WAHA: NOWEB (padrão do kit), WEBJS (Chromium, suporta stickers '
+  'animados) ou GOWS (Go, mais leve). Determina como o id da mensagem é lido.';
+
+notify pgrst, 'reload schema';

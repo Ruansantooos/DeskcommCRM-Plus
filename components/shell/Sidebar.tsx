@@ -34,11 +34,11 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
   return (
     <aside
       className={cn(
-        "fixed inset-y-0 left-0 z-30 flex flex-col border-r bg-card transition-[width] duration-200",
+        "fixed inset-y-0 left-0 z-30 flex flex-col bg-card transition-[width] duration-200",
         collapsed ? "w-16" : "w-60",
       )}
     >
-      <div className={cn("flex items-center border-b px-4 h-14", collapsed ? "justify-center" : "justify-start")}>
+      <div className={cn("flex items-center px-4 h-16", collapsed ? "justify-center" : "justify-start")}>
         {brand.logoUrl && !collapsed ? (
           // <img> em vez de next/image de propósito: a URL vem do .env de quem hospeda,
           // e next/image exige allowlist de domínios fechada em build — a imagem
@@ -62,7 +62,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
           </span>
         )}
       </div>
-      <nav className="flex-1 space-y-3 overflow-y-auto p-2" aria-label="Navegação principal">
+      <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-2" aria-label="Navegação principal">
         {grupos.map(({ group, items }) => {
           const tituloId = `nav-grupo-${group.id}`;
           return (
@@ -90,7 +90,10 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
                         title={collapsed ? item.label : undefined}
                         aria-current={isActive ? "page" : undefined}
                         className={cn(
-                          "relative flex items-center gap-3 rounded-md px-3 py-1.5 text-sm transition-colors",
+                          // Pílula, não retângulo: é o que separa navegação de
+                          // lista de links, e o formato faz mais pela leitura do
+                          // estado ativo do que a cor sozinha.
+                          "relative flex items-center gap-3 rounded-full px-3.5 py-2.5 text-sm transition-colors",
                           isActive
                             ? "bg-accent text-accent-foreground"
                             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
@@ -132,7 +135,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
           );
         })}
       </nav>
-      <div className="border-t p-2">
+      <div className="p-2">
         {rodape && (
           <Link
             href={rodape.href}

@@ -48,6 +48,9 @@ export const ApiErrorCodes = {
   trigger_kind_not_implemented: "trigger_kind_not_implemented", // publish de followup-flow com kind sem motor de enrollment (stage_change/conversation_end)
 
   // 429
+  growth_agent_busy: "growth_agent_busy", // 409: já existe run queued/running deste agente (EPIC-14)
+  growth_provider_not_configured: "growth_provider_not_configured", // 422: env do provider externo ausente
+
   rate_limited: "rate_limited",
 
   // 500 / upstream

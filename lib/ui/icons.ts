@@ -17,6 +17,8 @@ export {
   UsersThree,
   Storefront,
   Robot,
+  // prospecção (EPIC-14) — quem sai procurando cliente
+  Binoculars,
   Sparkle,
   ShieldCheck,
   Gear,
@@ -25,6 +27,7 @@ export {
   Buildings,
   FlowArrow,
   ChatsCircle,
+  ChatCircleDots,
   ClipboardText,
   Scales,
   Gauge,

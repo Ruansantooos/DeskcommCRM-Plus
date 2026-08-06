@@ -7,27 +7,34 @@ sobra CPU para o WAHA, que é o único componente sem alternativa serverless.
 | Componente | Onde | Por quê |
 |---|---|---|
 | App Next.js | Vercel | plataforma nativa; escala sozinho |
-| 11 crons | Vercel Cron | paridade 1:1 com o `scheduler` do `docker-compose.prod.yml` |
+| 11 crons | **cron externo** (a própria VPS) | o Hobby permite 2 crons, e só 1x por dia — o sistema precisa de 11, quatro a cada minuto |
 | WAHA | VPS | container COM ESTADO: segura a sessão do WhatsApp aberta. Não existe em serverless |
 | Postgres | Supabase | já é externo |
 | Redis | Upstash | REST, serverless-friendly |
 
-## 1. A armadilha que faz os 11 crons falharem em silêncio
+## 1. Os crons NÃO rodam na Vercel
 
-Os endpoints `/api/v1/cron/*` exigem `Authorization: Bearer <INTERNAL_CRON_SECRET>`
-(com fallback para `INTERNAL_SECRET`). O Vercel Cron manda
-`Authorization: Bearer $CRON_SECRET` — **outro nome de variável**.
+O plano Hobby permite **2 cron jobs, com frequência máxima diária**. O sistema
+precisa de **11**, e quatro deles a cada minuto (`event-log-drain`,
+`agent-dispatcher`, `routing-worker`, `followup-flow-worker`). Não cabe.
 
-Se os valores não forem iguais, todo cron responde 401 e nada processa:
-mensagem chega no WhatsApp e o agente nunca responde, sem erro na tela.
+Por isso não existe `vercel.json` com `crons`: o agendamento sai de casa. A
+mesma VPS que já roda o WAHA bate nos endpoints públicos do app.
 
-**Defina as três com o MESMO valor** nas env vars do projeto Vercel:
-
+```bash
+export APP_URL=https://seu-app.vercel.app
+export INTERNAL_SECRET=<o mesmo valor do .env da Vercel>
+./scripts/cron-externo.sh agora       # testa uma vez
+./scripts/cron-externo.sh instalar    # escreve no crontab
 ```
-INTERNAL_SECRET      = <mesmo segredo>
-INTERNAL_CRON_SECRET = <mesmo segredo>
-CRON_SECRET          = <mesmo segredo>
-```
+
+**Sem isso o sistema fica mudo.** Não quebra nenhuma tela — mas a mensagem
+chega no WhatsApp e fica parada: nada drena o `event_log`, o agente nunca
+responde, follow-up nunca dispara, conversa nunca é atribuída.
+
+Como conferir que está vivo: `./scripts/cron-externo.sh agora` deve terminar
+com `ciclo concluído` e sem nenhuma linha `FALHOU`. Um `FALHOU` costuma ser
+`INTERNAL_SECRET` diferente entre a VPS e a Vercel.
 
 ## 2. Os dois lados precisam se enxergar
 

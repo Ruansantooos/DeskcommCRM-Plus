@@ -3,10 +3,12 @@ import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { ROLE_RANK, type Role } from "@/lib/auth/types";
 import {
   Bell,
+  Binoculars,
   BookOpen,
   Brain,
   Buildings,
   ChartBar,
+  ChatCircleDots,
   ChartLineUp,
   ClipboardText,
   ClockCountdown,
@@ -21,6 +23,7 @@ import {
   Key,
   Lightbulb,
   Lock,
+  MagnifyingGlass,
   PlugsConnected,
   PuzzlePiece,
   Receipt,
@@ -50,7 +53,14 @@ import {
  * Doutrina: docs/doctrine/sistema-vivo.md — "por qual porta se chega até mim?"
  */
 
-export type NavGroupId = "atendimento" | "crm" | "ia" | "canais" | "analise" | "organizacao";
+export type NavGroupId =
+  | "atendimento"
+  | "crm"
+  | "prospeccao"
+  | "ia"
+  | "canais"
+  | "analise"
+  | "organizacao";
 
 export interface NavGroup {
   id: NavGroupId;
@@ -96,6 +106,11 @@ export interface NavDestination {
 export const NAV_GROUPS: NavGroup[] = [
   { id: "atendimento", label: "Atendimento" },
   { id: "crm", label: "CRM" },
+  // Depois de CRM e antes de IA de propósito: o lead precisa existir antes de
+  // alguém atendê-lo. E é grupo próprio, não item dentro de "Agente de IA",
+  // porque lá já existe um item chamado "Agentes" (os que conversam com o
+  // cliente) — dois "Agentes" no mesmo sidebar seria ambiguidade garantida.
+  { id: "prospeccao", label: "Prospecção" },
   { id: "ia", label: "Agente de IA", hub: { href: "/app/ai", label: "Ver tudo em IA" } },
   { id: "canais", label: "Canais" },
   { id: "analise", label: "Análise" },
@@ -186,6 +201,58 @@ export const NAV_DESTINATIONS: NavDestination[] = [
     icon: Funnel,
     group: "crm",
     minRole: "manager",
+    sidebar: true,
+  },
+
+  // ---- Prospecção — de onde o lead vem ----
+  // Grupo com 3 telas, portanto SEM hub: a convenção acima é hub só acima de 4,
+  // abaixo disso ele cabe inteiro no sidebar e seria um clique a mais para
+  // chegar onde já dava.
+  {
+    href: "/app/growth",
+    label: "Painel",
+    description: "Quantas empresas você achou e com quantas consegue falar.",
+    icon: Gauge,
+    group: "prospeccao",
+    minRole: "manager",
+    sidebar: true,
+  },
+  {
+    // Primeiro item do grupo de propósito: é o caminho de menor cerimônia.
+    // Configurar um agente para "quero ver quem são os dentistas de BH agora"
+    // é pedir demais antes de entregar qualquer coisa.
+    href: "/app/growth/search",
+    label: "Buscar empresas",
+    description: "Busca avulsa por nicho, cidade ou perfil de empresa. Você vê antes de gravar.",
+    icon: MagnifyingGlass,
+    group: "prospeccao",
+    minRole: "manager",
+    sidebar: true,
+  },
+  {
+    href: "/app/growth/approvals",
+    label: "Aprovar mensagens",
+    description: "A fila do gate humano: nenhuma mensagem de prospecção sai sem alguém ler.",
+    icon: ChatCircleDots,
+    group: "prospeccao",
+    minRole: "manager",
+    sidebar: true,
+  },
+  {
+    href: "/app/growth/agents",
+    label: "Agentes de prospecção",
+    description: "Quem sai procurando cliente: nicho, cidade, limite diário e agendamento.",
+    icon: Binoculars,
+    group: "prospeccao",
+    minRole: "manager",
+    sidebar: true,
+  },
+  {
+    href: "/app/growth/companies",
+    label: "Empresas descobertas",
+    description: "O que a prospecção encontrou, com diagnóstico e pontuação.",
+    icon: Buildings,
+    group: "prospeccao",
     sidebar: true,
   },
 

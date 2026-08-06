@@ -21,6 +21,26 @@ export const CHANNEL_CAPABILITIES: Record<ChannelProvider, ChannelCapabilities> 
     groups: "full",
     costPerMessage: false,
   },
+  /**
+   * Evolution: mesma natureza do WAHA — WhatsApp NÃO-OFICIAL, self-host.
+   *
+   * `banRisk: true` não é conservadorismo: é a verdade do canal, e é o que arma
+   * throttle, warm-up e cap diário. Copiar o perfil do `meta_cloud` aqui
+   * desarmaria toda a proteção anti-banimento num número que pode, sim, ser
+   * banido — e o dono só descobriria com o número já queimado.
+   *
+   * `voiceNote: server-convert` porque o Evolution converte áudio no servidor,
+   * como o WAHA; entregar ogg/opus pronto não é exigido.
+   */
+  evolution: {
+    freeformOutsideWindow: true,
+    requiresTemplates: false,
+    banRisk: true,
+    minIntervalMs: null,
+    voiceNote: "server-convert",
+    groups: "full",
+    costPerMessage: false,
+  },
   // Hetero-restrição: não me banem, mas a Meta me proíbe e me cobra.
   meta_cloud: {
     freeformOutsideWindow: false,

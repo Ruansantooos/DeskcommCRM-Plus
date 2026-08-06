@@ -138,9 +138,19 @@ const KNOWN_DEBT: { reason: string; files: string[] }[] = [
 
 const DEBT = new Set(KNOWN_DEBT.flatMap((g) => g.files));
 
+/**
+ * Caminhos SEMPRE com barra normal.
+ *
+ * `join()` devolve `lib\channels\...` no Windows, e tanto o `ALLOWED`
+ * (`/^lib\/channels\//`) quanto o `KNOWN_DEBT` (strings com `/`) usam barra
+ * normal. Sem normalizar, a catraca reprovava no Windows acusando os PRÓPRIOS
+ * arquivos de `lib/channels/` que ela existe para permitir — e listava toda a
+ * dívida conhecida como se fosse nova. Passava no CI (Linux) e falhava só na
+ * máquina de quem desenvolve, que é o pior lugar para uma regra mentir.
+ */
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const p = join(dir, e.name);
+    const p = join(dir, e.name).replaceAll("\\", "/");
     if (e.isDirectory()) return e.name === "node_modules" ? [] : walk(p);
     return /\.tsx?$/.test(e.name) ? [p] : [];
   });

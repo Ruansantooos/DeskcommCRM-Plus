@@ -160,6 +160,32 @@ const schema = z.object({
   // O <PublicEnvScript/> injeta os valores em runtime.
   APP_NAME: z.string().optional().default(""),
   APP_LOGO_URL: z.string().optional().default(""),
+
+  // --- Evolution API (canal de WhatsApp alternativo ao WAHA) ---------------
+  // OPCIONAIS: quem usa WAHA não preenche, e quem usa Evolution não sobe WAHA.
+  // O adapter trata ausência como "canal não configurado" (NOOP), não erro —
+  // instalação sem nenhum dos dois precisa bootar mesmo assim.
+  EVOLUTION_API_URL: z.string().optional().default(""),
+  EVOLUTION_API_KEY: z.string().optional().default(""),
+
+  // --- Growth Agents (EPIC-14) ---------------------------------------------
+  // Todas OPCIONAIS de propósito, inclusive em produção: o módulo de
+  // prospecção é opt-in. Sem a chave do Places, o agente Maps aparece na UI
+  // como "não configurado" e nunca é agendado — em vez de derrubar o boot de
+  // quem nunca vai usar prospecção. Env nova sem default quebra instalação
+  // fresca, e instalação fresca é o produto.
+  GOOGLE_PLACES_API_KEY: z.string().optional().default(""),
+  META_AD_LIBRARY_TOKEN: z.string().optional().default(""),
+  // Kipflow — dados cadastrais de empresas brasileiras (CNPJ, CNAE, sócios,
+  // faturamento presumido, LinkedIn). Fonte de descoberta irmã do Places, não
+  // substituta: uma acha negócio com fachada, a outra acha empresa com cadastro.
+  KIPFLOW_API_KEY: z.string().optional().default(""),
+  // Timeout do fetch do analisador de site. Curto de propósito: um site lento
+  // não pode segurar a fila inteira.
+  GROWTH_HTTP_TIMEOUT_MS: z.string().optional().default("8000"),
+  // Declarar-se no scraping é doutrina, não cortesia — quem roda isto numa VPS
+  // responde pelo tráfego com o próprio domínio.
+  GROWTH_USER_AGENT: z.string().optional().default("DeskcommCRM-GrowthBot/1.0"),
 });
 
 let parsed = schema.safeParse(process.env);

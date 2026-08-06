@@ -13,14 +13,16 @@
  */
 export type ChannelSessionRef =
   | { provider: "waha"; waha_session_name: string }
-  | { provider: "meta_cloud"; meta_phone_number_id: string };
+  | { provider: "meta_cloud"; meta_phone_number_id: string }
+  | { provider: "evolution"; evolution_instance: string };
 
 /**
  * Colunas que um `select` do PostgREST precisa trazer para `resolveSessionRef`
  * funcionar. Fica aqui pelo mesmo motivo da função: a string do `select` também
  * nomeia coluna de provider, e ela some da feature junto com a decisão.
  */
-export const CHANNEL_SESSION_REF_COLUMNS = "provider, waha_session_name, meta_phone_number_id";
+export const CHANNEL_SESSION_REF_COLUMNS =
+  "provider, waha_session_name, meta_phone_number_id, evolution_instance";
 
 export function resolveSessionRef(session: ChannelSessionRef): string {
   switch (session.provider) {
@@ -28,5 +30,7 @@ export function resolveSessionRef(session: ChannelSessionRef): string {
       return session.meta_phone_number_id;
     case "waha":
       return session.waha_session_name;
+    case "evolution":
+      return session.evolution_instance;
   }
 }

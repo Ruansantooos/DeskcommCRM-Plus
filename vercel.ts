@@ -13,3 +13,13 @@
  *
  * Auth de cron: header `Authorization: Bearer ${INTERNAL_SECRET}` validado em cada handler.
  */
+
+import type { VercelConfig } from "@vercel/config/v1";
+
+const config: VercelConfig = {
+  functions: {
+    "app/api/internal/agents/run/route.ts": { maxDuration: 300 },
+  },
+};
+
+export default config;
